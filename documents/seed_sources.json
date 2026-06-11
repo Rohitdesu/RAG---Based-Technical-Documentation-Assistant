@@ -1,0 +1,22 @@
+[
+  {
+    "title": "LangGraph Overview",
+    "url": "https://docs.langchain.com/oss/python/langgraph/overview"
+  },
+  {
+    "title": "LangGraph Graph API Overview",
+    "url": "https://docs.langchain.com/oss/python/langgraph/graph-api"
+  },
+  {
+    "title": "FastAPI Tutorial",
+    "url": "https://fastapi.tiangolo.com/tutorial/"
+  },
+  {
+    "title": "Pydantic Models",
+    "url": "https://docs.pydantic.dev/latest/concepts/models/"
+  },
+  {
+    "title": "Chroma Getting Started",
+    "url": "https://docs.trychroma.com/docs/overview/getting-started"
+  }
+]
