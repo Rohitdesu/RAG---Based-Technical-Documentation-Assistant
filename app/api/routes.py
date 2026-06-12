@@ -6,7 +6,12 @@ import json
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
 from app.core.container import AppContainer, get_container
-from app.core.exceptions import ConfigurationError, IngestionError
+from app.core.exceptions import (
+    ConfigurationError,
+    IngestionError,
+    SessionNotFoundError,
+    UpstreamServiceError,
+)
 from app.core.models import (
     DocumentListResponse,
     FeedbackRequest,
@@ -14,6 +19,9 @@ from app.core.models import (
     IngestResponse,
     QueryRequest,
     QueryResponse,
+    SessionCreateResponse,
+    SessionDeleteResponse,
+    SessionRecord,
 )
 
 
@@ -48,9 +56,27 @@ def query_docs(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="No documents are indexed yet. Use POST /ingest first.",
             )
-        return container.query_workflow.invoke(request.question.strip())
+        if request.session_id:
+            session = container.sessions.get_session(request.session_id)
+        else:
+            session = container.sessions.create_session()
+        response = container.query_workflow.invoke(
+            question=request.question.strip(),
+            session_id=session.session_id,
+            chat_history=session.chat_history,
+        )
+        container.sessions.append_messages(
+            session.session_id,
+            user_message=request.question.strip(),
+            assistant_message=response.answer,
+        )
+        return response
     except ConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+    except UpstreamServiceError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - defensive API guard
@@ -94,6 +120,8 @@ async def ingest_docs(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+    except UpstreamServiceError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - defensive API guard
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -120,3 +148,29 @@ def submit_feedback(
         }
     )
     return FeedbackResponse(message="Feedback recorded successfully.")
+
+
+@router.post("/session/create", response_model=SessionCreateResponse)
+def create_session(container: AppContainer = Depends(get_container)):
+    session = container.sessions.create_session()
+    return SessionCreateResponse(
+        session_id=session.session_id,
+        created_at=session.created_at,
+    )
+
+
+@router.get("/session/{session_id}", response_model=SessionRecord)
+def get_session(session_id: str, container: AppContainer = Depends(get_container)):
+    try:
+        return container.sessions.get_session(session_id)
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.delete("/session/{session_id}", response_model=SessionDeleteResponse)
+def delete_session(session_id: str, container: AppContainer = Depends(get_container)):
+    try:
+        container.sessions.delete_session(session_id)
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return SessionDeleteResponse(message="Session cleared successfully.")

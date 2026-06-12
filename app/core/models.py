@@ -8,24 +8,52 @@ from pydantic import BaseModel, Field, HttpUrl
 
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1, description="Natural language question to ask.")
+    session_id: str | None = Field(default=None, min_length=1, description="Optional session for follow-up memory.")
 
 
 class SourceReference(BaseModel):
     document_name: str
     source_id: str
     source_type: Literal["file", "url"]
+    source_kind: Literal["local_document", "web_search"] = "local_document"
     location: str
     chunk_id: str
     chunk_index: int
     similarity_score: float
+    snippet: str | None = None
+
+
+class HallucinationCheckResult(BaseModel):
+    grounded: bool
+    confidence_score: float = Field(..., ge=0.0, le=1.0)
+    explanation: str
+    warning: str | None = None
+    regeneration_attempted: bool = False
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    timestamp: datetime
+
+
+class SessionRecord(BaseModel):
+    session_id: str
+    chat_history: list[ChatMessage]
+    created_at: datetime
+    updated_at: datetime
 
 
 class QueryResponse(BaseModel):
+    session_id: str
     answer: str
     sources: list[SourceReference]
     query_type: str
     rewritten_query: str
     retry_count: int
+    used_web_search: bool = False
+    hallucination_check: HallucinationCheckResult
+    warning: str | None = None
 
 
 class FeedbackRequest(BaseModel):
@@ -36,6 +64,15 @@ class FeedbackRequest(BaseModel):
 
 
 class FeedbackResponse(BaseModel):
+    message: str
+
+
+class SessionCreateResponse(BaseModel):
+    session_id: str
+    created_at: datetime
+
+
+class SessionDeleteResponse(BaseModel):
     message: str
 
 
@@ -88,6 +125,7 @@ class RetrievedChunk(BaseModel):
     source_id: str
     document_name: str
     source_type: Literal["file", "url"]
+    source_kind: Literal["local_document", "web_search"] = "local_document"
     location: str
     chunk_index: int
     text: str

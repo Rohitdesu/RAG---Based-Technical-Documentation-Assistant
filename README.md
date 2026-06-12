@@ -1,48 +1,60 @@
 # RAG-Based Technical Documentation Assistant
 
-This project implements a Retrieval-Augmented Generation (RAG) assistant for technical documentation using Python, FastAPI, LangGraph, Google Gemini Flash, Gemini embeddings, and ChromaDB.
+This project implements a production-oriented RAG assistant for technical documentation using Python, FastAPI, LangGraph, Google Gemini Flash, Gemini embeddings, ChromaDB, Tavily web search fallback, session memory, and a Streamlit frontend.
 
-The assistant:
+The repository now includes both the required assignment features and the optional bonus extensions:
 
-- accepts natural language questions
-- rewrites and classifies each query before retrieval
-- retrieves top-K documentation chunks from ChromaDB
-- grades retrieved chunks for relevance with Gemini
-- retries retrieval through a LangGraph conditional loop when nothing relevant is found
-- generates grounded answers with citations
-- exposes the workflow through FastAPI endpoints
+- query analysis and classification
+- ChromaDB retrieval over technical documentation
+- Gemini-based document grading
+- conditional LangGraph routing with retry logic
+- grounded answer generation with citations
+- hallucination checking and one-shot regeneration
+- Tavily web search fallback when the local corpus is insufficient
+- session-scoped conversation memory for follow-up questions
+- FastAPI APIs and a Streamlit chat frontend
 
 ## Project Overview
 
-The repository is built around a self-corrective LangGraph workflow:
+The assistant answers natural-language questions against a documentation corpus. It first tries to ground answers in the indexed documentation. If the corpus cannot answer the question, it can fall back to web search, then runs a hallucination check before returning the response.
 
-1. `Query Analysis` rewrites the question for better retrieval and classifies it as `Conceptual`, `How-to`, `Troubleshooting`, or `API Reference`.
-2. `Retrieval` embeds the rewritten query and searches ChromaDB for the most similar chunks.
-3. `Document Grading` evaluates each chunk with Gemini and keeps only relevant chunks.
-4. `Generation` produces an answer grounded only in the relevant chunks and cites sources inline.
-5. If no relevant chunks are found, the graph follows a conditional retry path until `MAX_RETRIES` is reached.
+The system is designed to:
 
-## Architecture
+- prefer local documentation over the open web
+- keep routing logic explicit in LangGraph
+- preserve backward compatibility for the existing APIs
+- expose grounding metadata and source provenance to the client
+- support follow-up questions through session-based memory
+
+## Updated Architecture
 
 ```mermaid
 flowchart LR
     A["User Question"] --> B["Query Analysis"]
-    B --> C["Retrieval from ChromaDB"]
+    B --> C["Retrieval"]
     C --> D["Document Grading"]
-    D -->|"Relevant chunks found"| E["Answer Generation"]
-    D -->|"No relevant chunks and retries left"| F["Increment Retry Count"]
-    F --> B
-    D -->|"Retry limit reached"| G["Fallback Response"]
+    D -->|"Relevant docs found"| E["Generation"]
+    D -->|"No relevant docs and retries left"| F["Web Search"]
+    D -->|"No relevant docs and local retries remain"| G["Increment Retry"]
+    G --> B
+    F --> E
+    E --> H["Hallucination Check"]
+    H -->|"Grounded"| I["Final Response"]
+    H -->|"Not grounded and retry remains"| J["Regenerate Once"]
+    J --> E
+    H -->|"Still not grounded"| K["Return With Warning"]
 ```
 
 ### Architecture Notes
 
-- `FastAPI` handles API validation and HTTP responses.
-- `LangGraph` manages state, routing, and retry logic.
-- `Google Gemini Flash` handles query rewriting, relevance grading, and answer generation.
-- `Gemini Embeddings` powers semantic search.
-- `ChromaDB` persists chunk embeddings locally under `./chroma_db`.
-- `DocumentRegistry` stores indexed document metadata in `./data/indexed_documents.json`.
+- `FastAPI` exposes the assistant through HTTP APIs.
+- `LangGraph` coordinates the full routing workflow.
+- `Gemini Flash` handles query analysis, document grading, generation, and hallucination checking.
+- `Gemini Embeddings` powers semantic retrieval.
+- `ChromaDB` stores local document chunk embeddings.
+- `Tavily` provides the web-search fallback path.
+- `SessionStore` keeps per-session chat history on disk under `data/sessions/`.
+- `Streamlit` provides a minimal chat interface for follow-up questions and citation review.
 
 ## Repository Structure
 
@@ -55,13 +67,16 @@ flowchart LR
 │   ├── grading/
 │   ├── graph/
 │   ├── ingestion/
+│   ├── memory/
 │   ├── retrieval/
+│   ├── web_search/
 │   └── main.py
 ├── documents/
 │   ├── seed/
 │   └── seed_sources.json
 ├── scripts/
 │   └── fetch_seed_documents.py
+├── streamlit_app.py
 ├── chroma_db/
 ├── data/
 ├── .env.example
@@ -71,9 +86,7 @@ flowchart LR
 
 ## Documentation Corpus
 
-The project ships with seed URLs and a fetch script instead of committing vendor documentation directly.
-
-Seed sources:
+The seed corpus is defined in [documents/seed_sources.json](/C:/Users/rohit/Documents/Rag-%20Based%20Doc%20Assistant/documents/seed_sources.json) and includes:
 
 - LangGraph Overview
 - LangGraph Graph API Overview
@@ -81,11 +94,11 @@ Seed sources:
 - Pydantic Models
 - Chroma Getting Started
 
-These URLs live in [documents/seed_sources.json](/C:/Users/rohit/Documents/Rag-%20Based%20Doc%20Assistant/documents/seed_sources.json).
+The repository stores the source URLs and a fetch-and-ingest script rather than committing third-party documentation snapshots by default.
 
-## Setup Instructions
+## Setup
 
-### 1. Create and activate a virtual environment
+### 1. Create a virtual environment
 
 ```powershell
 python -m venv .venv
@@ -100,85 +113,109 @@ pip install -r requirements.txt
 
 ### 3. Configure environment variables
 
-Copy `.env.example` to `.env` and set your Gemini API key:
+Recommended:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Required variable:
+The application reads `.env` first and falls back to `.env.example` for local convenience. Secrets should live in `.env`, not in the tracked example file.
+
+Required or important variables:
 
 - `GEMINI_API_KEY`
+- `TAVILY_API_KEY`
+- `GENERATION_MODEL`
+- `EMBEDDING_MODEL`
+- `MAX_RETRIES`
+- `MAX_HALLUCINATION_RETRIES`
+- `WEB_SEARCH_MAX_RESULTS`
 
-### 4. Seed the corpus
-
-This downloads the configured documentation pages, stores plain-text snapshots in `documents/seed/`, and ingests them into ChromaDB.
+### 4. Ingest the seed corpus
 
 ```powershell
 python .\scripts\fetch_seed_documents.py
 ```
 
-### 5. Run the API
+### 5. Run FastAPI
 
 ```powershell
 uvicorn app.main:app --reload
 ```
 
-Open Swagger UI at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
+Swagger UI:
+
+- [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+
+### 6. Run Streamlit
+
+```powershell
+python -m streamlit run .\streamlit_app.py
+```
 
 ## FastAPI Endpoints
 
 ### `POST /query`
 
-Submit a natural language question.
+Submit a question. Supports optional session memory.
 
 Request:
 
 ```json
 {
-  "question": "What is LangGraph and when should I use it?"
+  "question": "What is LangGraph?",
+  "session_id": "optional-session-id"
 }
 ```
 
-Response:
+Response shape:
 
 ```json
 {
-  "answer": "LangGraph is a low-level orchestration framework for stateful, long-running agents [1][2].",
+  "session_id": "uuid",
+  "answer": "LangGraph is ... [1]",
   "sources": [
     {
       "document_name": "LangGraph Overview",
       "source_id": "url-...",
       "source_type": "url",
+      "source_kind": "local_document",
       "location": "https://docs.langchain.com/oss/python/langgraph/overview",
       "chunk_id": "chunk-...",
-      "chunk_index": 0,
-      "similarity_score": 0.82
+      "chunk_index": 1,
+      "similarity_score": 0.70,
+      "snippet": "Overview ..."
     }
   ],
   "query_type": "Conceptual",
-  "rewritten_query": "LangGraph overview purpose stateful orchestration framework long-running agents",
-  "retry_count": 0
+  "rewritten_query": "LangGraph framework overview ...",
+  "retry_count": 0,
+  "used_web_search": false,
+  "hallucination_check": {
+    "grounded": true,
+    "confidence_score": 0.95,
+    "explanation": "The claims are supported by the retrieved context.",
+    "warning": null,
+    "regeneration_attempted": false
+  },
+  "warning": null
 }
 ```
 
 ### `POST /ingest`
 
-Supports file uploads, URL ingestion, or both.
+Supports:
 
-`multipart/form-data` fields:
+- file uploads
+- URL ingestion
+- both together
 
-- `files`: one or more `.md`, `.txt`, or `.html` files
-- `urls`: a JSON array string or newline-separated URLs
-
-Example with URLs:
+Examples:
 
 ```powershell
 curl -X POST "http://127.0.0.1:8000/ingest" `
   -F "urls=[\"https://fastapi.tiangolo.com/tutorial/\"]"
 ```
-
-Example with a file:
 
 ```powershell
 curl -X POST "http://127.0.0.1:8000/ingest" `
@@ -187,126 +224,177 @@ curl -X POST "http://127.0.0.1:8000/ingest" `
 
 ### `GET /documents`
 
-Lists all indexed documents and chunk counts.
+Lists indexed local documents and chunk counts.
 
 ### `POST /feedback`
 
-Stores thumbs-up or thumbs-down feedback plus an optional comment.
+Stores thumbs-up or thumbs-down feedback with an optional comment.
 
-Request:
+### `POST /session/create`
 
-```json
-{
-  "rating": "up",
-  "comment": "Helpful answer",
-  "question": "What is LangGraph?"
-}
-```
+Creates a new session for follow-up questions.
+
+### `GET /session/{session_id}`
+
+Returns the stored chat history for a session.
+
+### `DELETE /session/{session_id}`
+
+Clears a session and its history.
+
+## Streamlit Frontend
+
+The Streamlit app in [streamlit_app.py](/C:/Users/rohit/Documents/Rag-%20Based%20Doc%20Assistant/streamlit_app.py) provides three main sections:
+
+- Chat Interface
+- Source Citations Panel
+- Session Information
+
+The UI supports:
+
+- asking questions
+- seeing follow-up answers within the same session
+- reviewing source citations
+- distinguishing `Documentation` vs `Web Search` sources
+- viewing hallucination check status and confidence score
 
 ## LangGraph State Schema
 
-The workflow tracks the required evaluation fields:
+The workflow state now includes the original required fields plus the bonus-feature fields:
 
 ```python
 {
+    "session_id": str,
+    "chat_history": list,
     "user_query": str,
     "rewritten_query": str,
     "query_type": str,
     "retrieved_chunks": list,
     "relevant_chunks": list,
+    "web_chunks": list,
     "answer": str,
     "sources": list,
     "retry_count": int,
-    "max_retries": int
+    "max_retries": int,
+    "used_web_search": bool,
+    "hallucination_retry_count": int,
+    "max_hallucination_retries": int,
+    "hallucination_check": dict,
+    "warning": str | None
 }
 ```
 
 ## Design Decisions
 
-### Why direct Gemini SDK instead of a higher-level wrapper
+### Query Analysis
 
-I used the official `google-genai` SDK for both generation and embeddings to keep the Gemini integration explicit and aligned with the selected stack.
+The query analysis node uses Gemini to:
+
+- rewrite ambiguous questions
+- classify the query
+- turn follow-up questions into standalone search queries using session history
 
 ### Chunking Strategy
 
 - `chunk_size = 1000`
 - `chunk_overlap = 200`
-- Strategy: deterministic character-window chunking with overlap
+- deterministic character-window chunking
 
 Reasoning:
 
-- 1000 characters is large enough to preserve local technical context such as parameter explanations and short procedures.
-- 200-character overlap reduces boundary loss when an answer spans adjacent chunks.
-- The deterministic strategy is simple, explainable, and stable for local execution.
+- preserves enough local technical detail for API explanations and short procedures
+- reduces edge loss with overlap
+- stays simple and deterministic for local execution
 
 ### Embedding Strategy
 
-- Embedding model: `gemini-embedding-2`
-- Query format: `task: question answering | query: ...`
-- Document format: `title: ... | text: ...`
+- model: `gemini-embedding-2`
+- query format: `task: question answering | query: ...`
+- document format: `title: ... | text: ...`
 
-This follows Google's current recommendation for asymmetric retrieval workflows using Gemini embeddings.
+### Document Grading
 
-### Retrieval and Grading
+The initial implementation graded chunks one by one. The updated version batches chunk grading into a single Gemini call to reduce request count and avoid exhausting free-tier request quotas too quickly.
 
-- Top-K retrieval defaults to `5`
-- Every retrieved chunk is graded individually by Gemini as `relevant` or `irrelevant`
-- Only relevant chunks are passed to answer generation
+### Hallucination Check
 
-### Retry Logic
+The hallucination-check node evaluates whether the generated answer is supported by the active context. If not grounded:
 
-- `MAX_RETRIES = 2`
-- If all chunks are graded irrelevant, the graph increments `retry_count` and loops back to `Query Analysis`
-- If retries are exhausted, the assistant returns:
+1. the graph regenerates once
+2. if the answer still fails grounding, it returns the answer with a warning
+
+### Web Search Fallback
+
+If local-document retrieval cannot find relevant context after the configured retry budget, the graph switches to Tavily search. Web results are normalized into the same chunk format used by generation, with `source_kind = "web_search"`.
+
+If web search also fails, the assistant returns:
 
 ```text
-I don't know based on the available documentation.
+I couldn't find reliable information in either the documentation corpus or web search.
 ```
 
-## Error Handling and Validation
+### Conversation Memory
 
-The API includes:
+Session memory is stored per session in JSON files under `data/sessions/`. The memory layer is intentionally thin so it can sit on top of the existing architecture without replacing the LangGraph workflow.
 
-- Pydantic validation for request bodies
-- `400` for missing question, missing ingest inputs, empty uploads, and unsupported file types
-- `404` when no documents have been indexed yet
-- `500` for unexpected runtime failures
+## Logging
 
-## Thought Process
+The application logs:
 
-The implementation favors clarity and rubric coverage over framework-heavy abstraction. The core goal was to make each evaluation criterion visible in the codebase:
+- routing decisions
+- local retry transitions
+- web-search usage
+- hallucination check outcomes
+- transient Gemini retry attempts
 
-- explicit LangGraph nodes
-- explicit conditional routing
-- explicit retry state
-- explicit ingestion pipeline
-- explicit source tracking and citations
+## Error Handling
 
-## Assumptions Made
+The API returns:
 
-- The assistant runs locally with network access when ingesting URLs.
-- Gemini API credentials are provided through `.env`.
-- A small documentation corpus is acceptable for the initial version.
+- `400` for invalid user input or bad ingest payloads
+- `404` for missing documents or missing sessions
+- `503` for temporary upstream model failures
+- `500` for configuration problems or unexpected server issues
 
-## Tradeoffs
+## Tradeoffs and Limitations
 
-- Chunking is character-based rather than semantic or heading-aware to keep behavior predictable.
-- Relevance grading is done sequentially per chunk, which is simpler but slower than batch grading.
-- Feedback is stored in a local JSONL file instead of a database.
+- Gemini free-tier rate limits can still affect rapid repeated queries, even after batching document grading.
+- Tavily fallback depends on a valid Tavily key or available keyless access.
+- Session memory is file-backed and intended for local/single-instance use, not multi-node deployment.
+- Chunking is still character-based rather than heading-aware.
+- The hallucination check is itself model-based, so it improves reliability but is not a formal guarantee.
+
+## Verification Summary
+
+Completed locally:
+
+- project compiles successfully
+- seed-document ingestion into ChromaDB works
+- live local-document query path works with citations and hallucination check
+- session creation and session history endpoints work
+- follow-up query behavior works on the live path when Gemini quota allows
+- deterministic smoke tests confirmed:
+  - web-search routing
+  - hallucination-triggered regeneration
+
+Observed during live testing:
+
+- the provided Gemini key is functional but subject to free-tier `429` and `503` limits
+- the provided Tavily key returned `401 Unauthorized`, so web-search generation could not be fully validated against live Tavily in this workspace
 
 ## Improvements With More Time
 
-- add heading-aware chunking and HTML-to-Markdown normalization
-- store conversation analytics and feedback in SQLite or Postgres
-- add automated tests with mocked Gemini responses
-- add reranking before the grading step
-- support incremental delete/update operations for documents
-- add streaming responses for long answers
+- add automated tests with mocked Gemini and Tavily clients
+- move session persistence and feedback storage to SQLite or Postgres
+- add semantic or heading-aware chunking
+- add reranking before grading
+- stream responses to the frontend
+- support deleting or refreshing individual ingested sources
 
 ## Local Execution Checklist
 
-1. Set `GEMINI_API_KEY` in `.env`.
-2. Install dependencies with `pip install -r requirements.txt`.
+1. Put valid keys in `.env`.
+2. Run `pip install -r requirements.txt`.
 3. Run `python .\scripts\fetch_seed_documents.py`.
 4. Start FastAPI with `uvicorn app.main:app --reload`.
-5. Test endpoints in Swagger UI or with `curl`.
+5. Optionally start Streamlit with `python -m streamlit run .\streamlit_app.py`.

@@ -8,15 +8,39 @@ class DocumentGrader:
     def __init__(self, gemini: GeminiGateway):
         self.gemini = gemini
 
-    def grade(self, question: str, rewritten_query: str, chunk: RetrievedChunk) -> bool:
+    def grade_many(
+        self,
+        question: str,
+        rewritten_query: str,
+        chunks: list[RetrievedChunk],
+    ) -> list[RetrievedChunk]:
+        if not chunks:
+            return []
+        chunk_descriptions = []
+        for index, chunk in enumerate(chunks, start=1):
+            chunk_descriptions.append(
+                "\n".join(
+                    [
+                        f"Chunk ID: {chunk.chunk_id}",
+                        f"Document: {chunk.document_name}",
+                        f"Location: {chunk.location}",
+                        f"Content: {chunk.text}",
+                    ]
+                )
+            )
         prompt = f"""
-You are grading whether a retrieved documentation chunk is useful for answering a user question.
+You are grading whether retrieved documentation chunks are useful for answering a user question.
 
 Return strict JSON with this schema:
 {{
-  "decision": "relevant" | "irrelevant",
+  "relevant_chunk_ids": ["chunk-id-1"],
   "reason": "short explanation"
 }}
+
+Rules:
+- Only include chunk IDs that are truly useful for answering the question.
+- If none are useful, return an empty array.
+- Be conservative and prefer precision over recall.
 
 Original question:
 {question}
@@ -24,16 +48,16 @@ Original question:
 Rewritten retrieval query:
 {rewritten_query}
 
-Document name:
-{chunk.document_name}
-
-Chunk:
+Chunks:
 \"\"\"
-{chunk.text}
+{chr(10).join(chunk_descriptions)}
 \"\"\"
 """
         result = self.gemini.generate_json(
             prompt,
-            fallback={"decision": "irrelevant", "reason": "Could not parse grading response."},
+            fallback={"relevant_chunk_ids": [], "reason": "Could not parse grading response."},
         )
-        return str(result.get("decision", "")).strip().lower() == "relevant"
+        relevant_ids = {
+            str(chunk_id).strip() for chunk_id in result.get("relevant_chunk_ids", []) if chunk_id
+        }
+        return [chunk for chunk in chunks if chunk.chunk_id in relevant_ids]
